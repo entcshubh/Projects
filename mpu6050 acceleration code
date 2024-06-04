@@ -1,0 +1,155 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <MPU6050_tockn.h> 
+// #include "time.h"
+#include <ESP_Google_Sheet_Client.h>
+ #include <Adafruit_BusIO_Register.h>
+ 
+// For SD/SD_MMC mounting helper
+#include <GS_SDHelper.h>
+
+#define WIFI_SSID "shubh"
+#define WIFI_PASSWORD "00000007"
+
+// Google Project ID
+#define PROJECT_ID "mpu-datalogging"
+
+// Service Account's client email
+#define CLIENT_EMAIL "mpu-datalogging@mpu-datalogging.iam.gserviceaccount.com"
+
+// Service Account's private key
+const char PRIVATE_KEY[] PROGMEM = "-----BEGIN PRIVATE KEY-----\n MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCbil99riONsLKZ\nax5Oq0EWeNKOF1w/jWv9NIkjlon590El9kJTghCHtKeuQokw40klpJUTysP+yk3p\n/ktRXcMUoMKwIbeOXKVDWwuZ3PPYv9rdQDRBMusk0RavZ0YKLlxIGJEhpbPhpXsr\nHIc8TF8TXkpFZ6ctLOPQL9CnZ3HAqEdHWO7ziUS5LLudTidAn/X+K3foQWZORd+T\n9RT6SCTxDrhYuVGi5S+jAksGbeT71Az9Qckf67dKm8YsYms53eXKzdbTb94vzg/L\npzeGNxzekpVsoMkzq9sS9pY/YIaaSHUvZF85Bze5VKCW7yDPHCwiAqyvGf6826Ws\nQgLaVJptAgMBAAECggEAARuEJdK/ro70DieKoSzTC0pVqwW51jsBzetvQm6xqmvy\nP4BBPkGWTH0RD5VGpL3GciQkY3xwQW80t21yhMl9pqGk9a3RHS/3vkZzJ7lyVdEe\nV6J0l3Ykb8HsXvSFw9dLDdzrI9m4Y10PlRcj8F45LPhhCp0xTDuFO2fyaxVk1jSG\nIt3vWYECyjpmkjwrcUpxeRJsMOJE1w47710nN6iY3jy5nLv/xO+fVL98eLzApQbh\nmGkhW6b7pH0c9m2KWsTFu8h1YbZwIdBWff1xyhBZliVqcgoVIilNBlCKyhGDxwGH\n77ECk8NrW7VWT1Z/e2K4V8VYKXKHLP+JwptTwBhqsQKBgQDMDdDJODNOdagAhaP7\nnu8jgY+rsKpCC75Yk3A4pLCBm1Bgpk1nIebXYeQ0jKAx7X7jrVYuDOUcR/5TGbBN\nK+2r75Q5ilaL5/Rw7ZvQkzktCsNWA6Jku/DV9yLWQpCgHdTksfk5m8f2NssuDM8b\nKePXWjBup3G/80SpXAG79Zp6MQKBgQDDIvBmh/NABssMB02SgFWQQ9MMGTnRKpvz\n6DmwE63AGwmZYlNB38s5SJvTg9CB2S4ZA5IwM1fxJC72hHQH+KAk05tbwV9iU4om\nIbmoxu+PZakpL47LOkb234FHyFhUCw50b05hdc942U6pGxepyZ8w5czic3nCe9hP\ng+DtvflY/QKBgBPy2dGCLAnkmLsMVZ64x/o5pVkMmWiBi2dPaq4u846IJ5B7UZ/e\ngZnW2R+GC/c1l60cegtgeVmNdECdh03UGJUxg9UoQBPHZm9P22bFrdZIchZLnqmo\ncgAI/B/kPA1bPT/qYkoOf7sDWlOzLuAh9UNNbuSye/1fA/xmoUjF1wdRAoGBAIQl\nvyPQYX00nIES2QejfU5rgBsrYioybtaop5iEWyBDryZ+nd94jQnIEC8XjzbAOyWZ\nc4DM5Htbg6pSXLmhN+J4ozdqJwxRgrb8E90mi8lSkVJg8JTUbIZ3KffQx3By5GEZ\nl70MqWovz8NZo5bKAdJ9bVjV1tlMQVrn9oVKJ/iJAoGAe1/hgJbysjDQHPdcg/CU\nXn7tZXxdm/6cARDOqYJjVwKbEV3qiiz5Wokd7e71bHMevYwxlKZecaW5RVdcnZjy\nkraJVgd6A2gAEHT57iNuEids3BXHVO6SbCRZpCPzp7u+WCCdOwDZUCoJ9LfsMrEv\nJ1AO+vVvUt1iZkICrhlhkSQ=\n-----END PRIVATE KEY-----\n";
+
+// The ID of the spreadsheet where you'll publish the data
+const char spreadsheetId[] = "196kNEnouYCdU-kedLAze1K7UTs_yjydEmiXMmJh0_gE";
+const char SCRIPT_ID[] = "1NC8L8h8uhsR2dX150PFgsshvKiW61SYFjHOz0lw469CXpXyIsSOBL-Ca";
+// Timer variables
+unsigned long lastTime = 0;  
+unsigned long timerDelay = 30000;
+
+// Token Callback function
+void tokenStatusCallback(TokenInfo info);
+
+// MPU6050 object
+MPU6050 mpu6050(Wire);
+
+// Variables to hold sensor readings
+float accelX, accelY, accelZ;
+float gyroX, gyroY, gyroZ;
+
+// NTP server to request epoch time
+const char* ntpServer = "pool.ntp.org";
+
+// Variable to save current epoch time
+unsigned long epochTime; 
+
+// Function that gets current epoch time
+unsigned long getTime() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    //Serial.println("Failed to obtain time");
+    return(0);
+  }
+  time(&now);
+  return now;
+}
+
+void setup(){
+
+    Serial.begin(115200);
+    Serial.println();
+    Serial.println();
+
+    //Configure time
+    configTime(0, 0, ntpServer);
+
+    // Initialize MPU6050 sensor 
+    Wire.begin();
+    mpu6050.begin();
+
+    GSheet.printf("ESP Google Sheet Client v%s\n\n", ESP_GOOGLE_SHEET_CLIENT_VERSION);
+
+    // Connect to Wi-Fi
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+    Serial.print("Connecting to Wi-Fi");
+    while (WiFi.status() != WL_CONNECTED) {
+      Serial.print(".");
+      delay(1000);
+    }
+    Serial.println();
+    Serial.print("Connected with IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.println();
+
+    // Set the callback for Google API access token generation status (for debug only)
+    GSheet.setTokenCallback(tokenStatusCallback);
+
+    // Set the seconds to refresh the auth token before expire (60 to 3540, default is 300 seconds)
+    GSheet.setPrerefreshSeconds(10 * 60);
+
+    // Begin the access token generation for Google API authentication
+    GSheet.begin(CLIENT_EMAIL, PROJECT_ID, PRIVATE_KEY);
+}
+
+void loop(){
+    // Call ready() repeatedly in loop for authentication checking and processing
+    bool ready = GSheet.ready();
+
+    if (ready && millis() - lastTime > timerDelay){
+        lastTime = millis();
+
+        FirebaseJson response;
+
+        Serial.println("\nAppend spreadsheet values...");
+        Serial.println("----------------------------");
+
+        FirebaseJson valueRange;
+
+        // New MPU6050 sensor readings
+        mpu6050.update();
+        accelX = mpu6050.getAccX();
+        accelY = mpu6050.getAccY();
+        accelZ = mpu6050.getAccZ();
+        gyroX = mpu6050.getGyroX();
+        gyroY = mpu6050.getGyroY();
+        gyroZ = mpu6050.getGyroZ();
+        // Get timestamp
+        epochTime = getTime();
+
+        valueRange.add("majorDimension", "COLUMNS");
+        valueRange.set("values/[0]/[0]", epochTime);
+        valueRange.set("values/[1]/[0]", accelX);
+        valueRange.set("values/[2]/[0]", accelY);
+        valueRange.set("values/[3]/[0]", accelZ);
+        valueRange.set("values/[4]/[0]", gyroX);
+        valueRange.set("values/[5]/[0]", gyroY);
+        valueRange.set("values/[6]/[0]", gyroZ);
+
+        // For Google Sheet API ref doc, go to https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.values/append
+        // Append values to the spreadsheet
+        bool success = GSheet.values.append(&response /* returned response */, spreadsheetId /* spreadsheet Id to append */, "Sheet1!A1" /* range to append */, &valueRange /* data range to append */);
+        if (success){
+            response.toString(Serial, true);
+            valueRange.clear();
+        }
+        else{
+            Serial.println(GSheet.errorReason());
+        }
+        Serial.println();
+        Serial.println(ESP.getFreeHeap());
+    }
+}
+
+void tokenStatusCallback(TokenInfo info){
+    if (info.status == token_status_error){
+        GSheet.printf("Token info: type = %s, status = %s\n", GSheet.getTokenType(info).c_str(), GSheet.getTokenStatus(info).c_str());
+        GSheet.printf("Token error: %s\n", GSheet.getTokenError(info).c_str());
+    }
+    else{
+        GSheet.printf("Token info: type = %s, status = %s\n", GSheet.getTokenType(info).c_str(), GSheet.getTokenStatus(info).c_str());
+    }
+}
