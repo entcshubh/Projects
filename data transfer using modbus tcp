@@ -37,8 +37,8 @@ ModbusClientRTU MB(REDEPIN);
 static bool eth_connected = false;
 
 // ThingSpeak settings
-const unsigned long channelID = 2571348; // Change to your Channel ID
-const char *apiKey = "LL9SIRAO8UD1JGKW"; // Change to your ThingSpeak API key
+const unsigned long channelID = 25348; // Change to your ThinkSpeak Channel ID
+const char *apiKey = "LL9SIRA1JKW"; // Change to your ThingSpeak API key
 
 WiFiClient client; // Declare WiFiClient globally
 
