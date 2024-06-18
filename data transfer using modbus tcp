@@ -3,7 +3,6 @@
 #include "Logging.h"
 #include <SPI.h>
 #include "FS.h"
-#include <WiFiClient.h>
 #include "ThingSpeak.h"
 #include <ETH.h>
 #include "SPIFFS.h"
@@ -35,6 +34,7 @@ ModbusClientRTU MB(REDEPIN);
 #define ETH_CLK_MODE ETH_CLOCK_GPIO0_IN
 
 static bool eth_connected = false;
+static bool was_eth_connected = false;
 
 // ThingSpeak settings
 const unsigned long channelID = 2571348; // Change to your Channel ID
@@ -70,10 +70,10 @@ void onEvent(WiFiEvent_t event)
     Serial.println("ETH Disconnected");
     eth_connected = false;
     break;
-  case ARDUINO_EVENT_ETH_STOP:
-    Serial.println("ETH Stopped");
-    eth_connected = false;
-    break;
+  // case ARDUINO_EVENT_ETH_STOP:
+  //   Serial.println("ETH Stopped");
+  //   eth_connected = false;
+  //   break;
   default:
     break;
   }
@@ -97,13 +97,10 @@ void handleData(ModbusMessage response, uint32_t token)
       Serial.printf("Register %d value: %d\n", FIRST_REGISTER + i, registerValues[i]);
     }
 
-    // Send data to ThingSpeak or store it if offline
-    if (eth_connected)
+    // Store data if offline
+    if (!eth_connected)
     {
-      sendToThingSpeak(registerValues[0], registerValues[1]);
-    }
-    else
-    {
+      Serial.println("ethernet not connected storing data");
       storeData(registerValues[0], registerValues[1]);
     }
   }
@@ -139,7 +136,7 @@ void setup()
     Serial.println("An error has occurred while mounting SPIFFS");
     return;
   }
-    Serial.println("__SPIFFS OK__");
+  Serial.println("__SPIFFS OK__");
 
   RTUutils::prepareHardwareSerial(Serial1);
   Serial1.begin(BAUDRATE, SERIAL_8N1, RXPIN, TXPIN);
@@ -150,12 +147,10 @@ void setup()
   MB.begin(Serial1);
 
   ETH.begin();
-  // Initialize Ethernet
   WiFi.onEvent(onEvent);
 
-  // Initialize ThingSpeak
   ThingSpeak.begin(client);
-    Serial.println("__ThingSpeak OK__");
+  Serial.println("__ThingSpeak OK__");
 }
 
 void loop()
@@ -174,44 +169,34 @@ void loop()
     next_request = millis();
   }
 
-  // Attempt to send stored data if online
-  if (eth_connected)
+  // Detect changes in Ethernet connection status
+  if (eth_connected && !was_eth_connected)
   {
+    Serial.println("sending data while online");
     sendDataIfOnline();
+    
   }
 
-  delay(5000); 
+  was_eth_connected = eth_connected;
+
+  // delay(20000);
 }
 
 void sendToThingSpeak(int value1, int value2)
 {
-  // Write to ThingSpeak
-  ThingSpeak.setField(1, value1);
-  ThingSpeak.setField(2, value2);
-  int responseCode = ThingSpeak.writeFields(channelID, apiKey);
+  if (eth_connected)
+  {
+    ThingSpeak.setField(1, value1);
+    ThingSpeak.setField(2, value2);
+    int responseCode = ThingSpeak.writeFields(channelID, apiKey);
 
-  if (responseCode==200)
-  {
-    Serial.println("Data sent to ThingSpeak successfully");
-  }
-  else
-  {
-    Serial.printf("Failed to send data to ThingSpeak. Response code: %d\n", responseCode);
-    switch(responseCode) {
-      case -301: Serial.println("Invalid field number specified."); break;
-      case -304: Serial.println("Server is busy."); break;
-      case -401: Serial.println("Invalid API key."); break;
-      case -404: Serial.println("Incorrect API key or channel ID."); break;
-      case -408: Serial.println("Connection timed out."); break;
-      case -422: Serial.println("Data format incorrect."); break;
-      case -429: Serial.println("Too many requests, rate limit exceeded."); break;
-      default: Serial.println("Unknown error.");
+    if (responseCode == 200)
+    {
+      Serial.println("Data sent to ThingSpeak successfully");
     }
   }
 
-  delay(20000);
 }
-
 void storeData(int value1, int value2)
 {
   File dataFile = SPIFFS.open("/data.txt", "a");
@@ -222,7 +207,7 @@ void storeData(int value1, int value2)
   }
   dataFile.printf("%d,%d\n", value1, value2);
   dataFile.close();
-  Serial.println("Data stored locally");
+  Serial.println("Data stored locally due to network unavailability");
 }
 
 void sendDataIfOnline()
@@ -234,7 +219,7 @@ void sendDataIfOnline()
     return;
   }
 
-  while (dataFile.available())
+  if (dataFile.available())
   {
     String line = dataFile.readStringUntil('\n');
     int commaIndex = line.indexOf(',');
@@ -243,6 +228,7 @@ void sendDataIfOnline()
       int value1 = line.substring(0, commaIndex).toInt();
       int value2 = line.substring(commaIndex + 1).toInt();
       sendToThingSpeak(value1, value2);
+      
     }
   }
 
@@ -262,8 +248,7 @@ void testClient(const char *host, uint16_t port)
     return;
   }
   client.printf("GET / HTTP/1.1\r\nHost: %s\r\n\r\n", host);
-  while (client.connected() && !client.available())
-    ;
+  while (client.connected() && !client.available());
   while (client.available())
   {
     Serial.write(client.read());
