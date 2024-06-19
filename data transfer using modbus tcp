@@ -48,6 +48,11 @@ void storeData(int value1, int value2);
 void sendDataIfOnline();
 void onEvent(WiFiEvent_t event);
 void testClient(const char *host, uint16_t port);
+void handleSerialCommands();
+int getLogCount();
+String getLogAt(int index);
+void deleteAllLogs();
+void deleteLogs(int numLogs);
 
 // Event handler for Ethernet events
 void onEvent(WiFiEvent_t event)
@@ -70,10 +75,6 @@ void onEvent(WiFiEvent_t event)
     Serial.println("ETH Disconnected");
     eth_connected = false;
     break;
-  // case ARDUINO_EVENT_ETH_STOP:
-  //   Serial.println("ETH Stopped");
-  //   eth_connected = false;
-  //   break;
   default:
     break;
   }
@@ -100,8 +101,14 @@ void handleData(ModbusMessage response, uint32_t token)
     // Store data if offline
     if (!eth_connected)
     {
-      Serial.println("ethernet not connected storing data");
+      Serial.println("Ethernet not connected, storing data locally");
       storeData(registerValues[0], registerValues[1]);
+    }
+    else
+    {
+      // Send new data immediately if online
+      sendDataIfOnline();
+      sendToThingSpeak(registerValues[0], registerValues[1]);
     }
   }
 }
@@ -129,7 +136,7 @@ void setup()
   while (!Serial)
   {
   }
-  Serial.println("__serial OK __");
+  Serial.println("__Serial OK__");
 
   if (!SPIFFS.begin(true))
   {
@@ -164,7 +171,7 @@ void loop()
     {
       ModbusError e(err);
       LOG_E("Error creating request: %02X - %s\n", (int)e, (const char *)e);
-      Serial.println("\nrequest error\n");
+      Serial.println("\nRequest error\n");
     }
     next_request = millis();
   }
@@ -172,14 +179,13 @@ void loop()
   // Detect changes in Ethernet connection status
   if (eth_connected && !was_eth_connected)
   {
-    Serial.println("sending data while online");
+    Serial.println("Sending data while online");
     sendDataIfOnline();
-    
   }
 
   was_eth_connected = eth_connected;
 
-  // delay(20000);
+  handleSerialCommands();
 }
 
 void sendToThingSpeak(int value1, int value2)
@@ -194,9 +200,13 @@ void sendToThingSpeak(int value1, int value2)
     {
       Serial.println("Data sent to ThingSpeak successfully");
     }
+    else
+    {
+      Serial.printf("Failed to send data to ThingSpeak. Response code: %d\n", responseCode);
+    }
   }
-
 }
+
 void storeData(int value1, int value2)
 {
   File dataFile = SPIFFS.open("/data.txt", "a");
@@ -219,7 +229,10 @@ void sendDataIfOnline()
     return;
   }
 
-  if (dataFile.available())
+  String remainingLogs = "";
+  bool sentSuccessfully = true;
+
+  while (dataFile.available() && sentSuccessfully)
   {
     String line = dataFile.readStringUntil('\n');
     int commaIndex = line.indexOf(',');
@@ -227,33 +240,187 @@ void sendDataIfOnline()
     {
       int value1 = line.substring(0, commaIndex).toInt();
       int value2 = line.substring(commaIndex + 1).toInt();
-      sendToThingSpeak(value1, value2);
-      
+      ThingSpeak.setField(1, value1);
+      ThingSpeak.setField(2, value2);
+      int responseCode = ThingSpeak.writeFields(channelID, apiKey);
+
+      if (responseCode == 200)
+      {
+        Serial.println("Stored data sent to ThingSpeak successfully");
+      }
+      else
+      {
+        Serial.printf("Failed to send stored data to ThingSpeak. Response code: %d\n", responseCode);
+        remainingLogs += line + "\n";
+        sentSuccessfully = false;
+      }
     }
   }
 
   dataFile.close();
-  // SPIFFS.remove("/data.txt");
+
+  // Rewrite the remaining logs back to the file if there were any send failures
+  if (remainingLogs.length() > 0)
+  {
+    dataFile = SPIFFS.open("/data.txt", "w");
+    if (!dataFile)
+    {
+      Serial.println("Failed to open file for writing");
+      return;
+    }
+    dataFile.print(remainingLogs);
+    dataFile.close();
+  }
+  else
+  {
+    SPIFFS.remove("/data.txt"); // Delete the file if all data was sent successfully
+  }
 }
 
 void testClient(const char *host, uint16_t port)
 {
-  Serial.print("\nconnecting to ");
+  Serial.print("\nConnecting to ");
   Serial.println(host);
 
   WiFiClient client;
   if (!client.connect(host, port))
   {
-    Serial.println("connection failed");
+    Serial.println("Connection failed");
     return;
   }
   client.printf("GET / HTTP/1.1\r\nHost: %s\r\n\r\n", host);
-  while (client.connected() && !client.available());
+  while (client.connected() && !client.available())
+    ;
+
   while (client.available())
   {
     Serial.write(client.read());
   }
 
-  Serial.println("closing connection\n");
+  Serial.println("Closing connection\n");
   client.stop();
+}
+
+void handleSerialCommands()
+{
+  if (Serial.available())
+  {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    if (command.equalsIgnoreCase("getlogcnt"))
+    {
+      int logCount = getLogCount();
+      Serial.printf("Log count: %d\n", logCount);
+    }
+    else if (command.startsWith("getlog"))
+    {
+      int index = command.substring(6).toInt();
+      String log = getLogAt(index);
+      if (log.length() > 0)
+      {
+        Serial.printf("Log at %d: %s\n", index, log.c_str());
+      }
+      else
+      {
+        Serial.printf("No log found at index %d\n", index);
+      }
+    }
+    else if (command.equalsIgnoreCase("dellogcnt"))
+    {
+      deleteAllLogs();
+      Serial.println("All logs deleted.");
+    }
+    else if (command.startsWith("dellog"))
+    {
+      int numLogs = command.substring(6).toInt();
+      deleteLogs(numLogs);
+      Serial.printf("%d logs deleted.\n", numLogs);
+    }
+  }
+}
+
+int getLogCount()
+{
+  int count = 0;
+  File dataFile = SPIFFS.open("/data.txt", "r");
+  if (!dataFile)
+  {
+    Serial.println("Failed to open file for reading");
+    return count;
+  }
+
+  while (dataFile.available())
+  {
+    String line = dataFile.readStringUntil('\n');
+    count++;
+  }
+
+  dataFile.close();
+  return count;
+}
+
+String getLogAt(int index)
+{
+  int currentIndex = 0;
+  File dataFile = SPIFFS.open("/data.txt", "r");
+  if (!dataFile)
+  {
+    Serial.println("Failed to open file for reading");
+    return "";
+  }
+
+  while (dataFile.available())
+  {
+    String line = dataFile.readStringUntil('\n');
+    if (currentIndex == index)
+    {
+      dataFile.close();
+      return line;
+    }
+    currentIndex++;
+  }
+
+  dataFile.close();
+  return "";
+}
+
+void deleteAllLogs()
+{
+  SPIFFS.remove("/data.txt");
+}
+
+void deleteLogs(int numLogs)
+{
+  File dataFile = SPIFFS.open("/data.txt", "r");
+  if (!dataFile)
+  {
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+
+  String remainingLogs = "";
+  int currentIndex = 0;
+
+  while (dataFile.available())
+  {
+    String line = dataFile.readStringUntil('\n');
+    if (currentIndex >= numLogs)
+    {
+      remainingLogs += line + "\n";
+    }
+    currentIndex++;
+  }
+
+  dataFile.close();
+
+  dataFile = SPIFFS.open("/data.txt", "w");
+  if (!dataFile)
+  {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+
+  dataFile.print(remainingLogs);
+  dataFile.close();
 }
